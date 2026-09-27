@@ -231,6 +231,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// subscribe-config heartbeat connection is healthy.
 	engine.Use(s.homeHeartbeatMiddleware())
 	engine.Use(s.exampleAPIKeySafeModeMiddleware())
+	engine.Use(managementIdentityMiddleware(os.Getenv("CPA_MANAGEMENT_TAILSCALE_LOGIN")))
 
 	// Setup routes
 	s.setupRoutes()

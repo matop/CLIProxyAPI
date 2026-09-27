@@ -1836,6 +1836,24 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	})
 }
 
+func TestDisableAutoUpdatePanelDoesNotFetchMissingManagementAsset(t *testing.T) {
+	staticDir := t.TempDir()
+	t.Setenv("MANAGEMENT_STATIC_PATH", staticDir)
+
+	server := newTestServer(t)
+	server.cfg.RemoteManagement.DisableAutoUpdatePanel = true
+
+	req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(staticDir, "management.html")); !os.IsNotExist(err) {
+		t.Fatalf("management asset stat error = %v, want file not to exist", err)
+	}
+}
+
 func TestExampleAPIKeySafeModeShowsWarningAndKeepsManagement(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 	staticDir := t.TempDir()

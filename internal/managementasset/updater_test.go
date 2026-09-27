@@ -23,7 +23,7 @@ func TestFetchLatestAssetSetsGitHubAuthorization(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		authorization = req.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"assets":[{"name":"management.html","browser_download_url":"https://example.com/management.html","digest":"sha256:abc123"}]}`))
+		_, _ = w.Write([]byte(`{"assets":[{"name":"management.html","browser_download_url":"https://example.com/management.html","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`))
 	}))
 	defer server.Close()
 
@@ -46,8 +46,8 @@ func TestFetchLatestAssetSetsGitHubAuthorization(t *testing.T) {
 	if asset == nil || asset.Name != managementAssetName {
 		t.Fatalf("asset = %#v, want %q", asset, managementAssetName)
 	}
-	if remoteHash != "abc123" {
-		t.Fatalf("remoteHash = %q, want %q", remoteHash, "abc123")
+	if remoteHash != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("remoteHash = %q, want a 64-character SHA256 digest", remoteHash)
 	}
 }
 
@@ -61,7 +61,7 @@ func TestFetchLatestAssetOmitsAuthorizationWithoutToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		authorization = req.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"assets":[{"name":"management.html","browser_download_url":"https://example.com/management.html","digest":"sha256:abc123"}]}`))
+		_, _ = w.Write([]byte(`{"assets":[{"name":"management.html","browser_download_url":"https://example.com/management.html","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`))
 	}))
 	defer server.Close()
 
@@ -75,8 +75,24 @@ func TestFetchLatestAssetOmitsAuthorizationWithoutToken(t *testing.T) {
 	if asset == nil || asset.Name != managementAssetName {
 		t.Fatalf("asset = %#v, want %q", asset, managementAssetName)
 	}
-	if remoteHash != "abc123" {
-		t.Fatalf("remoteHash = %q, want %q", remoteHash, "abc123")
+	if remoteHash != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("remoteHash = %q, want a 64-character SHA256 digest", remoteHash)
+	}
+}
+
+func TestFetchLatestAssetRequiresValidSHA256Digest(t *testing.T) {
+	for _, digest := range []string{"", "sha256:abc123", "md5:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"} {
+		t.Run(digest, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"assets":[{"name":"management.html","browser_download_url":"https://example.com/management.html","digest":"` + digest + `"}]}`))
+			}))
+			defer server.Close()
+
+			if _, _, err := fetchLatestAsset(t.Context(), server.Client(), server.URL); err == nil {
+				t.Fatal("fetchLatestAsset() error = nil, want invalid digest error")
+			}
+		})
 	}
 }
 
