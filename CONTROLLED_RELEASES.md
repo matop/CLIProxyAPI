@@ -1,6 +1,6 @@
 # Controlled releases
 
-This branch starts at upstream v7.3.13. Production releases are built through
+This branch starts at upstream v8.0.4. Production releases are built through
 `matop/cliproxyapi-release-control`, which pins this source commit, a UI commit,
 the Go toolchain, and the catalogs recorded in `catalog-lock.json`.
 
@@ -9,7 +9,7 @@ Do not enable its upstream release or Docker publishing workflows. They use
 upstream destinations and refresh model catalogs from a moving branch.
 
 Run the controlled binary with `--local-model` and set
-`remote-management.disable-auto-update-panel: true`. With this setting, a
+`management.disable-auto-update-panel: true`. With this setting, a
 missing management page returns 404. There is no fallback website download.
 When updates are explicitly enabled, downloaded UI assets require SHA-256
 metadata and matching bytes.
