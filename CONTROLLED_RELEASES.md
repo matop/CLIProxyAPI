@@ -4,6 +4,11 @@ This branch starts at upstream v8.0.4. Production releases are built through
 `matop/cliproxyapi-release-control`, which pins this source commit, a UI commit,
 the Go toolchain, and the catalogs recorded in `catalog-lock.json`.
 
+`models.json` adds one entry to catalog commit `60e09976`: `claude-sonnet-5-5`
+from router-for-me/models pull request 70. The `models.json` hash in
+`catalog-lock.json` covers that entry. Drop the local entry when the upstream
+catalog includes it.
+
 The upstream workflows are disabled in this fork's GitHub Actions settings.
 Do not enable its upstream release or Docker publishing workflows. They use
 upstream destinations and refresh model catalogs from a moving branch.
