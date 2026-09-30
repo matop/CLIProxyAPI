@@ -33,3 +33,9 @@ This check does not establish whether the identity provider enforces MFA.
 The dependency upgrades address findings from govulncheck. They do not establish
 that every upstream vulnerability has been found. Run the release checks for
 each approved source change.
+
+The GPT-6.1 Sol entries come from router-for-me/models commit
+`690c37fdbe62dc05f609f3a3e609d07ea4d16bf1`. This release adds the model to
+Codex Plus, Team, and Pro, and to the Codex client model list. It preserves the
+other pinned catalog entries. The catalog hashes record the exact combined
+files.
