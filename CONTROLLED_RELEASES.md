@@ -1,6 +1,6 @@
 # Controlled releases
 
-This branch starts at upstream v8.0.4. Production releases are built through
+This branch starts at upstream v8.0.13. Production releases are built through
 `matop/cliproxyapi-release-control`, which pins this source commit, a UI commit,
 the Go toolchain, and the catalogs recorded in `catalog-lock.json`.
 
