@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -60,6 +61,15 @@ func (s *Server) handleRedisConnection(conn net.Conn, reader *bufio.Reader) {
 
 	if s.cfg != nil && s.cfg.Home.Enabled {
 		_ = writeRedisError(writer, "ERR redis usage output disabled in home mode")
+		_ = writer.Flush()
+		return
+	}
+
+	// The RESP queue bypasses the HTTP management identity middleware. When an
+	// identity is required, only local processes may use it.
+	if strings.TrimSpace(os.Getenv("CPA_MANAGEMENT_TAILSCALE_LOGIN")) != "" && !localClient {
+		log.WithField("event", "management_access_denied").Warn("redis queue requires a local client when management identity is enforced")
+		_ = writeRedisError(writer, "ERR redis usage output is limited to local clients")
 		_ = writer.Flush()
 		return
 	}
