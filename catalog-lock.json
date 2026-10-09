@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "repository": "router-for-me/models",
-  "commit": "60e09976bc9d1c3ba3947e235409520c57b5b3ed",
+  "commit": "18a3f4b749dbba28f6d7d81ef5c34caecb03d0d8",
   "sha256": {
-    "models.json": "3efff25d86e6bba951560bd16049c9af8923912b46bcd5ae6db27c56e4e37b87",
-    "codex_client_models.json": "7b15fec55ed279c2a0f4b6dfd1f7d2617d7c9f22e94d385242a8cd9534411d38",
-    "devin_models.json": "1395ab0add51364066cb4ca89cacb2fb57fafb2c31f7c466e17e2de89f91d8d2"
+    "models.json": "18427ca6c646593c434656bdfc285bb9570b6f7bc3dc1a518639b9c860005cc6",
+    "codex_client_models.json": "8ebe5d117f8bff75874a0c15c64f8c568b510fad44cd4f41cc0385e43e8c1131",
+    "devin_models.json": "c425ddcd5db160e18f3843d8807037e2703a9f86c316d0703df38139796be068"
   }
 }
