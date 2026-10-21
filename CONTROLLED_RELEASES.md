@@ -16,8 +16,9 @@ metadata and matching bytes.
 
 The optional `CPA_MANAGEMENT_TAILSCALE_LOGIN` environment variable adds an
 identity restriction to the management page, management API, and plugin
-management resources. It requires the configured login from Tailscale Serve
-over HTTPS through a loopback connection. The management API still requires
+management resources. It accepts a comma-separated list of logins. It requires
+one of those logins from Tailscale Serve over HTTPS through a loopback
+connection. Every listed login has the same access. The management API still requires
 its management key. Inference routes keep their existing API-key checks.
 
 Only Tailscale Serve and trusted local processes may reach the loopback trust
