@@ -64,6 +64,34 @@ func TestManagementIdentityGateRejectsDuplicateHeaders(t *testing.T) {
 	}
 }
 
+func TestManagementIdentityGateAcceptsLoginList(t *testing.T) {
+	for _, tc := range []struct {
+		name, login string
+		want        int
+	}{
+		{"first login", "owner@example.test", 204},
+		{"second login after whitespace", "second@example.test", 204},
+		{"unlisted login", "other@example.test", 403},
+		{"empty entry is not a login", "", 403},
+		{"list is not a login", "owner@example.test,second@example.test", 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := gin.New()
+			router.Use(managementIdentityMiddleware("owner@example.test,, second@example.test "))
+			router.GET("/management.html", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+			req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+			req.RemoteAddr = "127.0.0.1:1234"
+			req.Header.Set("Tailscale-User-Login", tc.login)
+			req.Header.Set("X-Forwarded-Proto", "https")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			if response.Code != tc.want {
+				t.Fatalf("status = %d, want %d", response.Code, tc.want)
+			}
+		})
+	}
+}
+
 func TestManagementIdentityGateDisabledWithoutConfiguration(t *testing.T) {
 	router := gin.New()
 	router.Use(managementIdentityMiddleware(""))
