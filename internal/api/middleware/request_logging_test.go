@@ -925,7 +925,9 @@ func TestCaptureRequestInfoBoundsZstdExpansionWithoutAConfiguredLimit(t *testing
 // window is past the bound, so the raw bytes are logged and nothing large is allocated.
 func TestCaptureRequestInfoDoesNotDecodeASingleSegmentBomb(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	encoder, errNewWriter := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
+	// Force the single-segment frame the comment describes. klauspost/compress 1.20 picks an 8 MiB window
+	// for EncodeAll by default, which would exercise the bounded-expansion path instead of this one.
+	encoder, errNewWriter := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression), zstd.WithSingleSegment(true))
 	if errNewWriter != nil {
 		t.Fatal(errNewWriter)
 	}
