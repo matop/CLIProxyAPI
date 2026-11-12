@@ -500,25 +500,36 @@ func TestClaudeCacheControlDocChecksDoNotMaterializeLargeMessagesArray(t *testin
 		b.WriteString(`]}`)
 		raw := []byte(b.String())
 
-		doc := ojson.NewDoc(raw)
-		// Mutate messages.0 so "messages" splits into an ojson container (v.c != nil).
-		_ = doc.Set("messages.0.content.0.text", "short")
+		// Wall-clock time is noisy on shared CI runners running packages in parallel:
+		// keep the fastest of a few fresh runs. Allocation is checked on every run.
+		var elapsed time.Duration
+		var allocated uint64
+		for attempt := 0; attempt < 5; attempt++ {
+			doc := ojson.NewDoc(raw)
+			// Mutate messages.0 so "messages" splits into an ojson container (v.c != nil).
+			_ = doc.Set("messages.0.content.0.text", "short")
 
-		var mBefore, mAfter runtime.MemStats
-		runtime.ReadMemStats(&mBefore)
-		start := time.Now()
-		ensureCacheControlDoc(doc)
-		if got := countCacheControlsDoc(doc); got != 2 {
-			t.Fatalf("countCacheControlsDoc = %d, want 2", got)
+			var mBefore, mAfter runtime.MemStats
+			runtime.ReadMemStats(&mBefore)
+			start := time.Now()
+			ensureCacheControlDoc(doc)
+			if got := countCacheControlsDoc(doc); got != 2 {
+				t.Fatalf("countCacheControlsDoc = %d, want 2", got)
+			}
+			enforceCacheControlLimitDoc(doc, 4)
+			upgradeClaudeCacheControlTTLDoc(doc, claudeCacheControlTTL1h)
+			normalizeCacheControlTTLDoc(doc)
+			stripClaudeCacheControlTTLDoc(doc)
+			took := time.Since(start)
+			runtime.ReadMemStats(&mAfter)
+			if attempt == 0 || took < elapsed {
+				elapsed = took
+			}
+			if a := mAfter.TotalAlloc - mBefore.TotalAlloc; a > allocated {
+				allocated = a
+			}
 		}
-		enforceCacheControlLimitDoc(doc, 4)
-		upgradeClaudeCacheControlTTLDoc(doc, claudeCacheControlTTL1h)
-		normalizeCacheControlTTLDoc(doc)
-		stripClaudeCacheControlTTLDoc(doc)
-		elapsed := time.Since(start)
-		runtime.ReadMemStats(&mAfter)
 
-		allocated := mAfter.TotalAlloc - mBefore.TotalAlloc
 		if allocated > 64*1024 {
 			t.Fatalf("split messages: cache control doc helpers allocated %d bytes (> 64 KiB)", allocated)
 		}
@@ -547,22 +558,32 @@ func TestClaudeCacheControlDocChecksDoNotMaterializeLargeMessagesArray(t *testin
 		b.WriteString(`]}`)
 		raw := []byte(b.String())
 
-		doc := ojson.NewDoc(raw)
-		// Mutate only "model" so "messages" remains unsplit in root tail.
-		_ = doc.Set("model", "claude-sonnet-4-5-20250929")
+		// Fastest of a few fresh runs; see the split case above.
+		var elapsed time.Duration
+		var allocated uint64
+		for attempt := 0; attempt < 5; attempt++ {
+			doc := ojson.NewDoc(raw)
+			// Mutate only "model" so "messages" remains unsplit in root tail.
+			_ = doc.Set("model", "claude-sonnet-4-5-20250929")
 
-		var mBefore, mAfter runtime.MemStats
-		runtime.ReadMemStats(&mBefore)
-		start := time.Now()
-		if got := countCacheControlsDoc(doc); got != 2 {
-			t.Fatalf("countCacheControlsDoc = %d, want 2", got)
+			var mBefore, mAfter runtime.MemStats
+			runtime.ReadMemStats(&mBefore)
+			start := time.Now()
+			if got := countCacheControlsDoc(doc); got != 2 {
+				t.Fatalf("countCacheControlsDoc = %d, want 2", got)
+			}
+			enforceCacheControlLimitDoc(doc, 4)
+			normalizeCacheControlTTLDoc(doc)
+			took := time.Since(start)
+			runtime.ReadMemStats(&mAfter)
+			if attempt == 0 || took < elapsed {
+				elapsed = took
+			}
+			if a := mAfter.TotalAlloc - mBefore.TotalAlloc; a > allocated {
+				allocated = a
+			}
 		}
-		enforceCacheControlLimitDoc(doc, 4)
-		normalizeCacheControlTTLDoc(doc)
-		elapsed := time.Since(start)
-		runtime.ReadMemStats(&mAfter)
 
-		allocated := mAfter.TotalAlloc - mBefore.TotalAlloc
 		if allocated > 64*1024 {
 			t.Fatalf("unsplit 1024 messages: allocated %d bytes (> 64 KiB)", allocated)
 		}

@@ -3923,8 +3923,36 @@ func (e *serverResponsesWebsocketCaptureExecutor) HttpRequest(context.Context, *
 	return nil, nil
 }
 
+// waitForQuietDir waits until no file under dir changes for 200ms, or 3s pass.
+// Debug request logging writes under the auth dir asynchronously; without this,
+// t.TempDir's RemoveAll can race a late write and fail with "directory not empty".
+func waitForQuietDir(dir string) {
+	signature := func() string {
+		var b strings.Builder
+		_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err == nil {
+				fmt.Fprintf(&b, "%s|%d|%d\n", path, info.Size(), info.ModTime().UnixNano())
+			}
+			return nil
+		})
+		return b.String()
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	last, stable := signature(), 0
+	for stable < 4 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		if current := signature(); current == last {
+			stable++
+		} else {
+			last, stable = current, 0
+		}
+	}
+}
+
 func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
 	server := newTestServer(t)
+	// Registered after newTestServer's t.TempDir, so it runs before the RemoveAll cleanup.
+	t.Cleanup(func() { waitForQuietDir(server.cfg.AuthDir) })
 	provider := &revocableServerAccessProvider{}
 	server.accessManager.SetProviders([]sdkaccess.Provider{provider})
 
