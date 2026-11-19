@@ -2243,9 +2243,11 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := gpt55["max_tokens"].(float64); got != 64000 {
 		t.Fatalf("gpt-5.5 max_tokens = %v, want 64000", gpt55["max_tokens"])
 	}
+	// The tiers come from the embedded catalog template, which changes with the
+	// pinned models commit. models@2dabf224 ships gpt-5.5 without the Fast tier.
 	serviceTiers, ok := gpt55["service_tiers"].([]any)
-	if !ok || len(serviceTiers) != 1 {
-		t.Fatalf("expected gpt-5.5 priority service tier, got %#v", gpt55["service_tiers"])
+	if wantTiers := codexClientTestTemplateServiceTiers(t, "gpt-5.5"); !ok || !reflect.DeepEqual(serviceTiers, wantTiers) {
+		t.Fatalf("gpt-5.5 service_tiers = %#v, want the catalog template's %#v", gpt55["service_tiers"], wantTiers)
 	}
 	if custom == nil {
 		t.Fatal("expected custom model codex catalog entry")
@@ -2597,6 +2599,27 @@ func codexClientTestMaxTemplatePriority(t *testing.T) int {
 		}
 	}
 	return maxPriority
+}
+
+func codexClientTestTemplateServiceTiers(t *testing.T, slug string) []any {
+	t.Helper()
+	var payload struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(registry.GetCodexClientModelsJSON(), &payload); err != nil {
+		t.Fatalf("parse Codex client model templates: %v", err)
+	}
+	for _, model := range payload.Models {
+		if model["slug"] == slug {
+			tiers, ok := model["service_tiers"].([]any)
+			if !ok {
+				t.Fatalf("%s template service_tiers = %#v, want an array", slug, model["service_tiers"])
+			}
+			return tiers
+		}
+	}
+	t.Fatalf("no Codex client template for %s", slug)
+	return nil
 }
 
 func assertCodexNullableCatalogField(t *testing.T, model map[string]any, key string) {
