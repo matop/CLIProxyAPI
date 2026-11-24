@@ -1839,6 +1839,24 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	})
 }
 
+func TestDisableAutoUpdatePanelDoesNotFetchMissingManagementAsset(t *testing.T) {
+	staticDir := t.TempDir()
+	t.Setenv("MANAGEMENT_STATIC_PATH", staticDir)
+
+	server := newTestServer(t)
+	server.cfg.RemoteManagement.DisableAutoUpdatePanel = true
+
+	req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(staticDir, "management.html")); !os.IsNotExist(err) {
+		t.Fatalf("management asset stat error = %v, want file not to exist", err)
+	}
+}
+
 func TestExampleAPIKeySafeModeShowsWarningAndKeepsManagement(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 	staticDir := t.TempDir()
@@ -2219,21 +2237,23 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got := gpt55["apply_patch_tool_type"]; got != "freeform" {
 		t.Fatalf("gpt-5.5 apply_patch_tool_type = %#v, want freeform", got)
 	}
-	if got, _ := gpt55["minimal_client_version"].(string); got != "0.124.0" {
-		t.Fatalf("gpt-5.5 minimal_client_version = %#v, want 0.124.0", gpt55["minimal_client_version"])
+	template := codexClientTestTemplate(t, "gpt-5.5")
+	wantGPT55MinVersion, ok := template["minimal_client_version"].(string)
+	if !ok || gpt55["minimal_client_version"] != wantGPT55MinVersion {
+		t.Fatalf("gpt-5.5 minimal_client_version = %#v, want the catalog template's %#v", gpt55["minimal_client_version"], template["minimal_client_version"])
 	}
 	if got, _ := gpt55["max_tokens"].(float64); got != 64000 {
 		t.Fatalf("gpt-5.5 max_tokens = %v, want 64000", gpt55["max_tokens"])
 	}
-	serviceTiers, ok := gpt55["service_tiers"].([]any)
-	if !ok || !hasCodexServiceTier(serviceTiers, "priority") {
-		t.Fatalf("expected gpt-5.5 priority service tier, got %#v", gpt55["service_tiers"])
+	if want, ok := template["service_tiers"].([]any); !ok || !reflect.DeepEqual(gpt55["service_tiers"], want) {
+		t.Fatalf("gpt-5.5 service_tiers = %#v, want the catalog template's %#v", gpt55["service_tiers"], template["service_tiers"])
 	}
 	if custom == nil {
 		t.Fatal("expected custom model codex catalog entry")
 	}
-	if got, _ := custom["minimal_client_version"].(string); got != "0.124.0" {
-		t.Fatalf("custom minimal_client_version = %#v, want 0.124.0", custom["minimal_client_version"])
+	const wantCustomMinVersion = "0.124.0"
+	if got := custom["minimal_client_version"]; got != wantCustomMinVersion {
+		t.Fatalf("custom minimal_client_version = %#v, want %q", got, wantCustomMinVersion)
 	}
 	if got, _ := custom["display_name"].(string); got != "Custom Codex Model" {
 		t.Fatalf("custom display_name = %q, want Custom Codex Model", got)
@@ -2326,10 +2346,9 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 			olderMinVersions[slug], _ = model["minimal_client_version"].(string)
 		}
 	}
-	for _, slug := range []string{"gpt-5.5", "custom-codex-model-test"} {
-		if got := olderMinVersions[slug]; got != "0.124.0" {
-			t.Fatalf("older client %s minimal_client_version = %q, want 0.124.0", slug, got)
-		}
+	wantOlderMinVersions := map[string]string{"gpt-5.5": wantGPT55MinVersion, "custom-codex-model-test": wantCustomMinVersion}
+	if !reflect.DeepEqual(olderMinVersions, wantOlderMinVersions) {
+		t.Fatalf("older client minimal_client_version = %v, want %v", olderMinVersions, wantOlderMinVersions)
 	}
 }
 
@@ -2593,19 +2612,6 @@ func codexClientTestPriority(raw any) int {
 	}
 }
 
-func hasCodexServiceTier(tiers []any, id string) bool {
-	for _, raw := range tiers {
-		tier, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		if tierID, _ := tier["id"].(string); tierID == id {
-			return true
-		}
-	}
-	return false
-}
-
 func codexClientTestMaxTemplatePriority(t *testing.T) int {
 	t.Helper()
 	var payload struct {
@@ -2621,6 +2627,23 @@ func codexClientTestMaxTemplatePriority(t *testing.T) int {
 		}
 	}
 	return maxPriority
+}
+
+func codexClientTestTemplate(t *testing.T, slug string) map[string]any {
+	t.Helper()
+	var payload struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(registry.GetCodexClientModelsJSON(), &payload); err != nil {
+		t.Fatalf("parse Codex client model templates: %v", err)
+	}
+	for _, model := range payload.Models {
+		if model["slug"] == slug {
+			return model
+		}
+	}
+	t.Fatalf("no Codex client template for %s", slug)
+	return nil
 }
 
 func assertCodexNullableCatalogField(t *testing.T, model map[string]any, key string) {
@@ -3947,6 +3970,32 @@ func (e *serverResponsesWebsocketCaptureExecutor) HttpRequest(context.Context, *
 	return nil, nil
 }
 
+// waitForQuietDir waits until no file under dir changes for 200ms, or 3s pass.
+// Debug request logging writes under the auth dir asynchronously; without this,
+// t.TempDir's RemoveAll can race a late write and fail with "directory not empty".
+func waitForQuietDir(dir string) {
+	signature := func() string {
+		var b strings.Builder
+		_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err == nil {
+				fmt.Fprintf(&b, "%s|%d|%d\n", path, info.Size(), info.ModTime().UnixNano())
+			}
+			return nil
+		})
+		return b.String()
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	last, stable := signature(), 0
+	for stable < 4 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		if current := signature(); current == last {
+			stable++
+		} else {
+			last, stable = current, 0
+		}
+	}
+}
+
 func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
 	for _, requestLog := range []bool{false, true} {
 		t.Run(fmt.Sprintf("request_log=%t", requestLog), func(t *testing.T) {
@@ -3960,6 +4009,8 @@ func testServerResponsesWebsocketReauthorizesEachTurn(t *testing.T, requestLog b
 	server := newTestServerWithConfig(t, &proxyconfig.Config{
 		SDKConfig: sdkconfig.SDKConfig{RequestLog: requestLog},
 	})
+	// Registered after newTestServer's t.TempDir, so it runs before the RemoveAll cleanup.
+	t.Cleanup(func() { waitForQuietDir(server.cfg.AuthDir) })
 	provider := &revocableServerAccessProvider{}
 	server.accessManager.SetProviders([]sdkaccess.Provider{provider})
 
