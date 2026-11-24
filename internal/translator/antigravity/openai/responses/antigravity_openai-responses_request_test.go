@@ -757,7 +757,7 @@ func TestConvertOpenAIResponsesRequestToAntigravity_TrailingPartialParallelCalls
 	}
 }
 
-func TestConvertOpenAIResponsesRequestToAntigravity_InterruptedMessageBeforeRealOutputPreservesPairingAndOrder(t *testing.T) {
+func TestConvertOpenAIResponsesRequestToAntigravity_GroupsParallelOutputsBeforeDeferredMessage(t *testing.T) {
 	inputJSON := `{
 		"model": "gemini-3.8-flash-high",
 		"input": [
@@ -776,24 +776,33 @@ func TestConvertOpenAIResponsesRequestToAntigravity_InterruptedMessageBeforeReal
 		"stream": false
 	}`
 
-	out, _ := ConvertOpenAIResponsesRequestToAntigravity("gemini-3.8-flash-high", []byte(inputJSON), false)
+	out, errConvert := ConvertOpenAIResponsesRequestToAntigravity("gemini-3.8-flash-high", []byte(inputJSON), false)
+	if errConvert != nil {
+		t.Fatalf("ConvertOpenAIResponsesRequestToAntigravity: %v", errConvert)
+	}
 	rawRequest := ojson.GetBytesNoCopy(out, "request").Raw
 	if errPair := sigcompat.ValidateGeminiFunctionCallPairing([]byte(rawRequest)); errPair != nil {
 		t.Fatalf("ValidateGeminiFunctionCallPairing failed on Antigravity interrupted message before real output request: %v; output=%s", errPair, out)
 	}
 
-	// The user message precedes the completed tool response turn
-	stopText := ojson.GetBytesNoCopy(out, "request.contents.2.parts.0.text").String()
-	if stopText != "Stop, do something else instead." {
-		t.Fatalf("unexpected text in request.contents[2]: %q", stopText)
+	contents := ojson.GetBytesNoCopy(out, "request.contents").Array()
+	if len(contents) != 4 {
+		t.Fatalf("contents = %d, want 4; output=%s", len(contents), out)
 	}
-	c1Resp := ojson.GetBytesNoCopy(out, "request.contents.3.parts.0.functionResponse")
+	responses := contents[2].Get("parts").Array()
+	if contents[1].Get("role").String() != "model" || contents[2].Get("role").String() != "user" || len(responses) != 2 {
+		t.Fatalf("expected a grouped response turn directly after the model calls; output=%s", out)
+	}
+	c1Resp := responses[0].Get("functionResponse")
 	if c1Resp.Get("id").String() != "c1" || c1Resp.Get("name").String() != "shell" || c1Resp.Get("response.result").String() != "call interrupted, no output" {
 		t.Fatalf("unexpected synthesized response for c1: %s", c1Resp.Raw)
 	}
-	c2Resp := ojson.GetBytesNoCopy(out, "request.contents.3.parts.1.functionResponse")
+	c2Resp := responses[1].Get("functionResponse")
 	if c2Resp.Get("id").String() != "c2" || c2Resp.Get("name").String() != "shell" || c2Resp.Get("response.result").String() != "/tmp\n" {
 		t.Fatalf("unexpected real response for c2: %s", c2Resp.Raw)
+	}
+	if user := contents[3]; user.Get("role").String() != "user" || user.Get("parts.#").Int() != 1 || user.Get("parts.0.text").String() != "Stop, do something else instead." {
+		t.Fatalf("unexpected deferred user message: %s", user.Raw)
 	}
 }
 

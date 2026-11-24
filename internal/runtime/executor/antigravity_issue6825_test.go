@@ -32,22 +32,52 @@ func TestIssue6825StreamToolIndicesAcrossChunks(t *testing.T) {
 		`{"response":{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_time","args":{"tz":"America/Santiago"}}},{"functionCall":{"name":"get_time","args":{"tz":"Asia/Tokyo"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}}`,
 	}
 	var param any
-	var indices []int64
-	var arguments []string
+	var calls []issue6825ToolCall
 	for _, chunk := range chunks {
 		for _, out := range sdktranslator.TranslateStream(context.Background(), sdktranslator.FormatAntigravity, sdktranslator.FormatOpenAI, "gemini-3-flash", original, translated, []byte(chunk), &param) {
-			for _, call := range ojson.GetBytes(out, "choices.0.delta.tool_calls").Array() {
-				indices = append(indices, call.Get("index").Int())
-				arguments = append(arguments, call.Get("function.arguments").String())
-			}
+			calls = appendIssue6825ToolCallDeltas(t, calls, ojson.GetBytes(out, "choices.0.delta"))
 		}
 	}
-	if want := []int64{0, 1, 2}; !reflect.DeepEqual(indices, want) {
-		t.Errorf("stream tool indices = %v, want %v; clients must not merge distinct calls", indices, want)
+	arguments := make([]string, 0, len(calls))
+	for _, call := range calls {
+		arguments = append(arguments, call.Function.Arguments)
 	}
 	if want := []string{`{"tz":"UTC"}`, `{"tz":"America/Santiago"}`, `{"tz":"Asia/Tokyo"}`}; !reflect.DeepEqual(arguments, want) {
 		t.Errorf("tool arguments = %v, want %v", arguments, want)
 	}
+}
+
+type issue6825ToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+func appendIssue6825ToolCallDeltas(t *testing.T, calls []issue6825ToolCall, delta ojson.Result) []issue6825ToolCall {
+	t.Helper()
+	for _, tool := range delta.Get("tool_calls").Array() {
+		index := tool.Get("index")
+		if index.Type != ojson.Number || index.Num != float64(index.Int()) || index.Int() < 0 {
+			t.Fatalf("invalid tool call index: %s", tool.Raw)
+		}
+		id := tool.Get("id").String()
+		name := tool.Get("function.name").String()
+		if id != "" {
+			if index.Int() != int64(len(calls)) || name == "" || tool.Get("type").String() != "function" {
+				t.Fatalf("invalid start for tool call %d: %s", len(calls), tool.Raw)
+			}
+			call := issue6825ToolCall{ID: id, Type: "function"}
+			call.Function.Name = name
+			calls = append(calls, call)
+		} else if index.Int() >= int64(len(calls)) || name != "" {
+			t.Fatalf("invalid continuation for tool call: %s", tool.Raw)
+		}
+		calls[index.Int()].Function.Arguments += tool.Get("function.arguments").String()
+	}
+	return calls
 }
 
 // issue6825Conversation keeps translation, request preparation and replay real;
@@ -128,7 +158,7 @@ func (c *issue6825Conversation) callWithContext(ctx context.Context, payload []b
 		c.t.Fatalf("ExecuteStream: %v", errExecute)
 	}
 	message := []byte(`{"role":"assistant"}`)
-	var calls []map[string]any
+	var calls []issue6825ToolCall
 	var content, reasoning string
 	for chunk := range response.Chunks {
 		if chunk.Err != nil {
@@ -139,13 +169,7 @@ func (c *issue6825Conversation) callWithContext(ctx context.Context, payload []b
 			delta := ojson.GetBytes(line, "choices.0.delta")
 			content += delta.Get("content").String()
 			reasoning += delta.Get("reasoning_content").String()
-			for _, call := range delta.Get("tool_calls").Array() {
-				index := int(call.Get("index").Int())
-				if index != len(calls) {
-					c.t.Fatalf("unexpected new tool index %d, want %d", index, len(calls))
-				}
-				calls = append(calls, map[string]any{"id": call.Get("id").String(), "type": "function", "function": map[string]string{"name": call.Get("function.name").String(), "arguments": call.Get("function.arguments").String()}})
-			}
+			calls = appendIssue6825ToolCallDeltas(c.t, calls, delta)
 		}
 	}
 	msgDoc := ojson.NewDoc(message)
