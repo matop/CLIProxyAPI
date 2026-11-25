@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -234,12 +235,58 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 			defer cancelAttempt()
 		}
 		var failed bool
+		var sentPayload bool
 		var sawCompleted bool
 		var sawIncomplete bool
 		forward := true
 		var rewriter *StreamRewriter
 		if aliasResult.ForceMapping && strings.TrimSpace(aliasResult.OriginalAlias) != "" {
 			rewriter = NewStreamRewriter(StreamRewriteOptions{RewriteModel: aliasResult.OriginalAlias})
+		}
+		recordFailure := func(err error) error {
+			entry := logEntryWithRequestID(ctx)
+			warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), err)
+			rerr := resultErrorFromError(err)
+			action, okAction := matchRequestScopedErrorAction(auth, err, m.requestScopedErrorConfig(ctx))
+			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: opts, AccessToken: accessToken, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
+			result.RetryAfter = retryAfterFromError(err)
+			result.CredentialScope = isCredentialScopedError(err)
+			applyRequestScopedActionToResult(action, okAction, &result)
+			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+			if okAction && !isRequestTerminatedError(err) && !isRequestStopError(err) && !isTOSViolationError(err) {
+				if isRequestScopedStop(action, okAction) {
+					return wrapRequestStopError(err)
+				}
+				return wrapRequestScopedContinueError(err)
+			}
+			return err
+		}
+		retainedUpstreamFailure := func(err error) bool {
+			return errorCodeFromError(err) == transientTransportErrorCode && !isCredentialScopedError(err)
+		}
+		drainCanceled := func() {
+			if remaining == nil || failed || !sentPayload {
+				discardStreamChunks(remaining)
+				return
+			}
+			// The caller can reuse its request options after the output closes.
+			opts.Headers = opts.Headers.Clone()
+			opts.Query = url.Values(http.Header(opts.Query).Clone())
+			opts.OriginalRequest = bytes.Clone(opts.OriginalRequest)
+			if opts.Metadata != nil {
+				opts.Metadata = cloneRequestMetadata(opts.Metadata)
+			}
+			// An executor can surface its terminal error after the client receives
+			// the error payload and cancels. Record it without keeping the client stream open.
+			go func() {
+				recorded := false
+				for chunk := range remaining {
+					if !recorded && retainedUpstreamFailure(chunk.Err) && retryAfterFromError(chunk.Err) == nil {
+						recordFailure(chunk.Err)
+						recorded = true
+					}
+				}
+			}()
 		}
 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if chunk.Err != nil && !failed {
@@ -249,28 +296,13 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 						failed = true
 						return false
 					}
-					if !isRequestScopedError(chunk.Err) {
+					if !isRequestScopedError(chunk.Err) && !(sentPayload && retainedUpstreamFailure(chunk.Err)) {
 						failed = true
 						return false
 					}
 				}
 				failed = true
-				entry := logEntryWithRequestID(ctx)
-				warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), chunk.Err)
-				rerr := resultErrorFromError(chunk.Err)
-				action, okAction := matchRequestScopedErrorAction(auth, chunk.Err, m.requestScopedErrorConfig(ctx))
-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: opts, AccessToken: accessToken, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
-				result.RetryAfter = retryAfterFromError(chunk.Err)
-				result.CredentialScope = isCredentialScopedError(chunk.Err)
-				applyRequestScopedActionToResult(action, okAction, &result)
-				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
-				if okAction && !isRequestTerminatedError(chunk.Err) && !isRequestStopError(chunk.Err) && !isTOSViolationError(chunk.Err) {
-					if isRequestScopedStop(action, okAction) {
-						chunk.Err = wrapRequestStopError(chunk.Err)
-					} else {
-						chunk.Err = wrapRequestScopedContinueError(chunk.Err)
-					}
-				}
+				chunk.Err = recordFailure(chunk.Err)
 			}
 			if !forward {
 				return false
@@ -319,6 +351,7 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 			chunk.Payload = payload
 			if ctx == nil {
 				out <- chunk
+				sentPayload = true
 				return true
 			}
 			select {
@@ -326,6 +359,7 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 				forward = false
 				return false
 			case out <- chunk:
+				sentPayload = true
 				return true
 			}
 		}
@@ -337,7 +371,7 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 				if cancelAttempt != nil {
 					cancelAttempt()
 				}
-				discardStreamChunks(remaining)
+				drainCanceled()
 				return
 			}
 		}
@@ -357,7 +391,7 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 						if cancelAttempt != nil {
 							cancelAttempt()
 						}
-						discardStreamChunks(remaining)
+						drainCanceled()
 						return
 					case chunk, open = <-remaining:
 					}
@@ -375,7 +409,7 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 				if cancelAttempt != nil {
 					cancelAttempt()
 				}
-				discardStreamChunks(remaining)
+				drainCanceled()
 				return
 			}
 		}

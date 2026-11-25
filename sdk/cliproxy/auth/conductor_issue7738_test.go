@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -41,6 +42,54 @@ func (h *issue7738ResultHook) snapshot() []Result {
 	out := make([]Result, len(h.results))
 	copy(out, h.results)
 	return out
+}
+
+func TestWrapStreamResultRecordsUpstreamFailureAfterClientCancel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		hook := newIssue7738ResultHook()
+		manager := NewManager(nil, nil, hook)
+		const model = "gemini-test"
+		auth, errRegister := manager.Register(ctx, &Auth{ID: "stream-auth", Provider: "aistudio", Status: StatusActive})
+		if errRegister != nil {
+			t.Fatal(errRegister)
+		}
+
+		remaining := make(chan cliproxyexecutor.StreamChunk, 1)
+		defer close(remaining)
+		frame := []byte("event: error\ndata: {\"type\":\"error\"}\n\n")
+		headers := http.Header{"X-Test": {"original"}}
+		stream := manager.wrapStreamResult(ctx, auth, auth.Provider, model, model, nil,
+			[]cliproxyexecutor.StreamChunk{{Payload: frame}}, remaining,
+			OAuthModelAliasResult{}, false, cliproxyexecutor.Options{Headers: headers}, 0)
+		if got := <-stream.Chunks; !bytes.Equal(got.Payload, frame) {
+			t.Fatalf("stream chunk = %q, want %q", got.Payload, frame)
+		}
+
+		cancel()
+		if got, open := <-stream.Chunks; open {
+			t.Errorf("received a chunk after cancellation: %+v", got)
+		}
+		headers.Set("X-Test", "reused")
+		remaining <- cliproxyexecutor.StreamChunk{Err: &Error{
+			Code: ErrorCodeTransientTransport, Message: "upstream generation failed", HTTPStatus: http.StatusBadGateway,
+		}}
+		synctest.Wait()
+
+		results := hook.snapshot()
+		if len(results) != 1 || results[0].Success || results[0].Error == nil ||
+			results[0].Error.Code != ErrorCodeTransientTransport || results[0].Error.HTTPStatus != http.StatusBadGateway {
+			t.Fatalf("results = %+v, want one transient upstream 502 failure", results)
+		}
+		if got := results[0].Options.Headers.Get("X-Test"); got != "original" {
+			t.Errorf("recorded header = %q, want the original request header", got)
+		}
+		updated, ok := manager.GetByID(auth.ID)
+		if !ok || updated.Unavailable || updated.Failed != 1 {
+			t.Fatalf("auth = %+v, want one failure with credential available", updated)
+		}
+	})
 }
 
 func collectIssue7738Stream(t *testing.T, res *cliproxyexecutor.StreamResult) []byte {
